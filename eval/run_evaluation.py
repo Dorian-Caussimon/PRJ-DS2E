@@ -9,7 +9,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 
-from src.inference import toy_predict
+from src.inference import vlm_predict
 from src.guardrails import apply_safety_guardrails, validate_prediction
 from src.metrics import summarize_metrics
 from src.database import insert_run, init_db
@@ -34,7 +34,7 @@ def run(mode: str, db_path: Path) -> tuple[list[dict], dict]:
     init_db(db_path)
     for case in cases:
         image_path = ROOT / case['image_path']
-        pred = apply_safety_guardrails(toy_predict(image_path, mode=mode))
+        pred = apply_safety_guardrails(vlm_predict(image_path, mode=mode))
         valid, errors = validate_prediction(pred)
         row = {
             'case_id': case['case_id'],

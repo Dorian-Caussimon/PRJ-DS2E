@@ -61,8 +61,7 @@ uvicorn api.main:app --reload
 Exemple :
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/predict" \
-  -F "file=@data/sample_images/CXR_SYN_002_suspected_opacity.png"
+curl -X POST "http://127.0.0.1:8000/predict" \ -F "file=@data/sample_images/CXR_SYN_002_suspected_opacity.png"
 ```
 
 La réponse doit contenir une classe, une confiance, des observations visuelles, une justification, des limites et l'avertissement non clinique.
