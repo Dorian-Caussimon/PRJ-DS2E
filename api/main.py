@@ -14,7 +14,7 @@ sys.path.append(str(project_root))
 
 from src.inference import WARNING, toy_predict, vlm_predict
 from src.guardrails import apply_safety_guardrails
-from logging_utils import log_prediction
+from api.logging_utils import log_prediction
 
 app = FastAPI(
     title="Assistant radiologue virtuel — API de démonstration",
