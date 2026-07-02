@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -38,7 +39,7 @@ REQUIRED_KEYS = {
 #   Acceptez les conditions sur https://huggingface.co/google/medgemma-4b-it
 #   avant d'utiliser ce code, et citez la model card dans votre rapport.
 # ---------------------------------------------------------------------------
-_HF_MODEL = "google/medgemma-4b-it"
+_HF_MODEL = os.getenv("MEDGEMMA_MODEL", "google/medgemma-4b-it")
 
 
 # ---------------------------------------------------------------------------
@@ -60,12 +61,16 @@ def _load_prompt(mode: str) -> str:
     """Charge prompts/prompt_{mode}_v1.txt.
     Fallback inline si le fichier est absent pour ne jamais bloquer le pipeline.
     """
-    prompt_file = _PROMPTS_DIR / f"prompt_{mode}_v1.txt"
-    if prompt_file.exists():
-        return prompt_file.read_text(encoding="utf-8")
+    prompt_candidates = [
+        _PROMPTS_DIR / f"prompt_{mode}_v1.txt",
+        _PROMPTS_DIR / f"{mode}_prompt.txt",
+    ]
+    for prompt_file in prompt_candidates:
+        if prompt_file.exists():
+            return prompt_file.read_text(encoding="utf-8")
     import warnings
     warnings.warn(
-        f"[inference] Prompt file not found: {prompt_file}. Using inline fallback.",
+        f"[inference] Prompt file not found for mode={mode}. Using inline fallback.",
         stacklevel=3,
     )
     return _FALLBACK_PROMPT
@@ -109,11 +114,16 @@ def _get_pipeline():
     _log = lambda msg: print(f"[VLM] {msg}", file=sys.stderr, flush=True)
 
     try:
+        if not os.getenv("HF_TOKEN"):
+            _log("HF_TOKEN absent : MedGemma non charge, repli uncertain.")
+            return None
+
         import torch
         from transformers import pipeline
 
         device = 0 if torch.cuda.is_available() else -1
         device_label = "GPU (cuda)" if device == 0 else "CPU (lent, ~30-60 s/image)"
+        torch_dtype = torch.bfloat16 if device == 0 else torch.float32
         _log(f"⏳ Chargement MedGemma sur {device_label}…")
         _log("   (premier chargement ~1-5 min selon connexion et machine)")
 
@@ -121,6 +131,8 @@ def _get_pipeline():
             "image-text-to-text",
             model=_HF_MODEL,
             device=device,
+            torch_dtype=torch_dtype,
+            token=os.environ["HF_TOKEN"],
         )
         _log("✅ MedGemma chargé en mémoire")
         return _medgemma_pipeline
@@ -171,7 +183,7 @@ def _call_vlm_backend(image_path: Path, prompt: str) -> str | None:
                 ],
             }
         ]
-        outputs = pipe(messages, max_new_tokens=1000)
+        outputs = pipe(text=messages, max_new_tokens=1000)
         # Le pipeline retourne une liste ; on extrait le texte généré
         raw = outputs[0]["generated_text"][-1]["content"]
         _log(f"✅ Réponse reçue ({len(raw)} caractères)")
@@ -330,8 +342,47 @@ def vlm_predict(
 # Rétrocompatibilité
 # ---------------------------------------------------------------------------
 def toy_predict(image_path: str | Path, mode: str = "baseline") -> dict[str, Any]:
-    """Conservé pour les smoke tests existants. Délègue à vlm_predict."""
-    return vlm_predict(image_path, mode=mode)
+    """Backend local deterministe pour les smoke tests et la demo sans modele VLM."""
+    start = time.perf_counter()
+    image_path = Path(image_path)
+    name = image_path.name.lower()
+    quality = basic_quality_flag(image_path)
+
+    if "suspected_opacity" in name or "opacity" in name:
+        predicted_class = "suspected_opacity"
+        confidence = 0.78 if mode == "baseline" else 0.86
+        visual_evidence = ["synthetic opacity marker detected in filename"]
+        justification = "Toy backend uses the synthetic case naming convention for smoke tests."
+    elif "normal" in name:
+        predicted_class = "normal"
+        confidence = 0.76 if mode == "baseline" else 0.84
+        visual_evidence = ["synthetic normal marker detected in filename"]
+        justification = "Toy backend uses the synthetic case naming convention for smoke tests."
+    else:
+        predicted_class = "uncertain"
+        confidence = 0.5
+        visual_evidence = ["no reliable synthetic class marker detected"]
+        justification = "Toy backend cannot infer a reliable class from this filename."
+
+    if quality == "limited":
+        predicted_class = "uncertain"
+        confidence = min(confidence, 0.5)
+
+    return {
+        "image_quality": quality,
+        "predicted_class": predicted_class,
+        "confidence": round(confidence, 3),
+        "visual_evidence": visual_evidence,
+        "justification": justification,
+        "limitations": [
+            "toy backend based on synthetic filenames only",
+            "not a validated medical model",
+        ],
+        "warning": WARNING,
+        "model_name": f"toy-{mode}",
+        "prompt_version": f"{mode}_toy",
+        "latency_ms": int((time.perf_counter() - start) * 1000),
+    }
 
 
 def vlm_predict_placeholder(image_path: str | Path, prompt: str) -> dict[str, Any]:

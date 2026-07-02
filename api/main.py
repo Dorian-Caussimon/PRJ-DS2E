@@ -59,7 +59,7 @@ def root() -> dict:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "scope": "educational prototype, not diagnosis"}
 
 
 @app.post("/predict", response_model=PredictionResponse)

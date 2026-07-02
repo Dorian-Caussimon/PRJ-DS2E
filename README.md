@@ -52,6 +52,11 @@ python eval/run_evaluation.py --mode toy \
 
 Ce smoke test vérifie la structure du dépôt, le contrat du dataset synthétique, le schéma de sortie, les garde-fous, l'API de démonstration, la compilation Python et l'évaluation jouet.
 
+## Dataset reel optionnel
+
+Le dataset synthetique reste le socle de smoke test. Pour tester sur un petit echantillon reel RSNA
+sans commiter de donnees medicales, suivre la procedure dans `docs/real_dataset_rsna.md`.
+
 ## API de démonstration
 
 ```bash

@@ -5,9 +5,14 @@ __pycache__/
 .ipynb_checkpoints/
 tmp_uploads/
 medical_ai_evidence.sqlite
+medical_ai_evidence*.sqlite
 eval/outputs/
+eval/outputs*/
+data_external/
+data/logs/
 .env
 .DS_Store
+*.dcm
 
 # Local/professor visual material
 assets/

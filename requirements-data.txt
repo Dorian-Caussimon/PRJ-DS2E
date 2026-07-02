@@ -1,0 +1,4 @@
+kaggle>=1.6
+pydicom>=2.4
+numpy>=1.26
+pillow>=10.4
