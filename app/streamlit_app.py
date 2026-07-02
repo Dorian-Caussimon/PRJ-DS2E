@@ -9,6 +9,7 @@ from pathlib import Path
 import streamlit as st
 from PIL import Image
 
+# Configuration du chemin pour l'import des modules locaux
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
@@ -18,14 +19,18 @@ from src.database import insert_run, connect, init_db
 
 DB_PATH = project_root / "data" / "medical_ai_evidence.sqlite"
 
+# ---------------------------------------------------------------------------
+# Configuration de la page
+# ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Assistant radiologue virtuel — prototype pédagogique",
+    page_title="Assistant Radiologue Virtuel — Prototype Pédagogique",
     page_icon="🩻",
     layout="wide",
 )
 
 # ---------------------------------------------------------------------------
-# CSS
+# Identité visuelle et CSS
+# Palette clinique sobre, typo académique, et ciblage du DOM pour les cartes.
 # ---------------------------------------------------------------------------
 CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Spectral:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
@@ -49,6 +54,7 @@ CSS = """
 .stApp{ background:var(--bg); }
 html, body, [class*="css"]{ font-family:'Inter', sans-serif; color:var(--ink); }
 
+/* Cartes : stylisation des conteneurs */
 [data-testid="stVerticalBlockBorderWrapper"] > div{
   background:var(--card-bg);
   border:1px solid var(--border);
@@ -91,7 +97,7 @@ html, body, [class*="css"]{ font-family:'Inter', sans-serif; color:var(--ink); }
 
 .gauge-row{ display:flex; align-items:center; gap:.8rem; margin-top:.3rem; }
 .gauge-track{ flex:1; position:relative; height:10px; border-radius:6px; background:var(--border); overflow:hidden; }
-.gauge-fill{ position:absolute; left:0; top:0; height:100%; border-radius:6px; }
+.gauge-fill{ position:absolute; left:0; top:0; height:100%; border-radius:6px; transition: width 0.5s ease; }
 .gauge-value{ font-weight:700; font-size:.95rem; min-width:3.2rem; text-align:right; }
 
 .evidence-list{ margin:.2rem 0 0 0; padding-left:1.15rem; font-size:.93rem; line-height:1.6; color:var(--ink); }
@@ -114,25 +120,26 @@ html, body, [class*="css"]{ font-family:'Inter', sans-serif; color:var(--ink); }
 .hist-sub{ color:var(--muted); font-size:.8rem; margin:.15rem 0 0 0; }
 .stat-card{ background:var(--card-bg); border:1px solid var(--border); border-radius:12px; padding:1rem 1.2rem; text-align:center; }
 """
-
 st.markdown("<style>" + CSS + "</style>", unsafe_allow_html=True)
-
 
 # ---------------------------------------------------------------------------
 # Helpers d'affichage communs
 # ---------------------------------------------------------------------------
 CLASS_LABELS = {"normal": "Normal", "suspected_opacity": "Suspicion d'opacité", "uncertain": "Incertain"}
-CLASS_ICONS  = {"normal": "🟢", "suspected_opacity": "🟠", "uncertain": "⚫"}
+CLASS_ICONS = {"normal": "🟢", "suspected_opacity": "🟠", "uncertain": "⚫"}
 CLASS_COLOR_VARS = {"normal": "var(--normal)", "suspected_opacity": "var(--opacity)", "uncertain": "var(--uncertain)"}
+
 
 def render_class_badge(predicted_class: str) -> str:
     label = CLASS_LABELS.get(predicted_class, predicted_class)
     return f'<span class="badge badge-{predicted_class}"><span class="dot"></span>{label}</span>'
 
+
 def render_quality_tag(image_quality: str) -> str:
     css_class = "tag-good" if image_quality == "good" else "tag-limited"
     label = "Qualité d'image : bonne" if image_quality == "good" else "Qualité d'image : limitée"
     return f'<span class="tag {css_class}"><span class="dot"></span>{label}</span>'
+
 
 def render_confidence_gauge(confidence: float, predicted_class: str) -> str:
     pct = max(0, min(100, round(confidence * 100)))
@@ -143,9 +150,11 @@ def render_confidence_gauge(confidence: float, predicted_class: str) -> str:
         f'</div><div class="gauge-value" style="color:{color};">{pct}%</div></div>'
     )
 
+
 def render_evidence_list(items: list[str]) -> str:
     rows = "".join(f"<li>{item}</li>" for item in items)
     return f'<ul class="evidence-list">{rows}</ul>'
+
 
 def render_limitation_chips(items: list[str]) -> str:
     return "".join(f'<span class="limitation-chip">{item}</span>' for item in items)
@@ -168,6 +177,7 @@ def fetch_history(limit: int = 100) -> list[dict]:
     except Exception:
         return []
 
+
 def fetch_run_detail(run_id: int) -> dict | None:
     try:
         conn = connect(DB_PATH)
@@ -179,6 +189,7 @@ def fetch_run_detail(run_id: int) -> dict | None:
             return r
     except Exception:
         return None
+
 
 def count_by_class() -> dict[str, int]:
     try:
@@ -207,7 +218,7 @@ st.markdown(
     '<div style="display:flex; align-items:center; gap:.8rem;">'
     + HEADER_MARK
     + '<div><p class="eyebrow">Module de validation pédagogique — EFREI</p>'
-    + '<h1 class="hero-title">Assistant radiologue virtuel</h1></div></div>'
+    + '<h1 class="hero-title">Assistant Radiologue Virtuel</h1></div></div>'
     + '<p class="hero-sub">Pipeline de prédiction (toy / VLM) sur radiographies thoraciques synthétiques — '
     + "destiné à valider l'enchaînement du code, pas à produire un avis médical. "
     + "Position non clinique : ce dépôt n'est pas un dispositif médical.</p>"
@@ -216,7 +227,6 @@ st.markdown(
     + "Validation par un professionnel qualifié requise.</div></div>",
     unsafe_allow_html=True,
 )
-
 
 # ---------------------------------------------------------------------------
 # Sidebar : navigation + paramètres
@@ -232,79 +242,106 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Paramètres")
     mode = st.selectbox("Mode de prédiction", ["baseline", "improved"])
-    st.caption("« improved » bascule en *uncertain* dès que la qualité d'image est limitée.")
+    st.caption("« improved » bascule en uncertain dès que la qualité d'image est limitée.")
 
-    with st.expander("Comment tester ?"):
+    with st.expander("Comment tester ce prototype ?"):
         st.markdown(
             "Utilisez les images synthétiques de `data/sample_images`. "
             "Le nom de fichier encode la classe : `..._normal.png`, "
             "`..._suspected_opacity.png`, `..._uncertain.png`."
         )
 
+    st.info(
+        "**Aide :** Ce prototype analyse des radiographies thoraciques synthétiques pour valider le pipeline technique.")
+
     st.markdown("---")
     st.caption("Code pédagogique MIT. Datasets/modèles externes : licences propres.")
-
 
 # ===========================================================================
 # PAGE 1 — Analyse
 # ===========================================================================
 if page == "🩻 Analyse":
     uploaded = st.file_uploader(
-        "Déposer une radiographie thoracique frontale",
+        "📂 Déposer une radiographie thoracique frontale (JPG/PNG)",
         type=["png", "jpg", "jpeg"],
     )
 
     if uploaded:
-        # Conserver le nom d'origine : toy_predict lit la classe dans le nom
-        tmp_dir = Path(tempfile.mkdtemp())
-        tmp_path = tmp_dir / uploaded.name
-        tmp_path.write_bytes(uploaded.read())
+        # Validation du fichier (issue de la V2)
+        valid_keywords = ["chest", "xray", "thorax", "cxr", "normal", "opacity", "uncertain"]
+        if not any(k in uploaded.name.lower() for k in valid_keywords):
+            st.error("❌ Erreur : Le fichier ne semble pas être une radiographie thoracique valide selon son nom.")
+        else:
+            # UX de chargement (issue de la V2)
+            with st.spinner('Analyse clinique en cours par le modèle...'):
+                tmp_dir = Path(tempfile.mkdtemp())
+                tmp_path = tmp_dir / uploaded.name
+                tmp_path.write_bytes(uploaded.read())
 
-        pred = apply_safety_guardrails(toy_predict(tmp_path, mode=mode))
+                try:
+                    # Inférence sécurisée
+                    pred = apply_safety_guardrails(toy_predict(tmp_path, mode=mode))
 
-        # Persistance en base
-        case_id = uuid.uuid4().hex[:8]
-        try:
-            insert_run(DB_PATH, case_id, str(tmp_path), pred)
-        except Exception:
-            pass  # ne pas bloquer l'UI si la DB n'est pas disponible
+                    # Persistance en base (issue de la V1)
+                    case_id = uuid.uuid4().hex[:8]
+                    try:
+                        insert_run(DB_PATH, case_id, str(tmp_path), pred)
+                    except Exception:
+                        pass  # ne pas bloquer l'UI si la DB n'est pas disponible
 
-        col1, col2 = st.columns([1, 1], gap="large")
+                    # Mise en page des résultats
+                    col1, col2 = st.columns([1, 1], gap="large")
 
-        with col1:
-            with st.container(border=True):
-                st.markdown('<p class="section-label">Image source</p>', unsafe_allow_html=True)
-                st.image(Image.open(tmp_path), use_container_width=True)
-                st.markdown(render_quality_tag(pred["image_quality"]), unsafe_allow_html=True)
-                st.caption(f"{uploaded.name} · ID run : {case_id}")
+                    with col1:
+                        with st.container(border=True):
+                            st.markdown('<p class="section-label">Image source</p>', unsafe_allow_html=True)
+                            st.image(Image.open(tmp_path), use_container_width=True)
+                            st.markdown(render_quality_tag(pred.get("image_quality", "good")), unsafe_allow_html=True)
+                            st.caption(f"{uploaded.name} · ID run : {case_id}")
 
-        with col2:
-            with st.container(border=True):
-                st.markdown('<p class="section-label">Résultat de l\'analyse</p>', unsafe_allow_html=True)
-                st.markdown(render_class_badge(pred["predicted_class"]), unsafe_allow_html=True)
+                        # Retour visuel natif de succès
+                        st.success("✅ Fichier validé et traité avec succès.")
 
-                st.markdown('<p class="section-label" style="margin-top:1.1rem;">Confiance</p>', unsafe_allow_html=True)
-                st.markdown(render_confidence_gauge(pred["confidence"], pred["predicted_class"]), unsafe_allow_html=True)
+                    with col2:
+                        with st.container(border=True):
+                            st.markdown('<p class="section-label">Résultat de l\'analyse</p>', unsafe_allow_html=True)
+                            st.markdown(render_class_badge(pred["predicted_class"]), unsafe_allow_html=True)
 
-                st.markdown('<p class="section-label" style="margin-top:1.1rem;">Observations</p>', unsafe_allow_html=True)
-                st.markdown(render_evidence_list(pred["visual_evidence"]), unsafe_allow_html=True)
+                            st.markdown('<p class="section-label" style="margin-top:1.1rem;">Confiance</p>',
+                                        unsafe_allow_html=True)
+                            st.markdown(render_confidence_gauge(pred["confidence"], pred["predicted_class"]),
+                                        unsafe_allow_html=True)
 
-                st.markdown('<p class="section-label" style="margin-top:1.1rem;">Justification</p>', unsafe_allow_html=True)
-                st.markdown(f'<div class="justification-quote">{pred["justification"]}</div>', unsafe_allow_html=True)
+                            st.markdown('<p class="section-label" style="margin-top:1.1rem;">Observations</p>',
+                                        unsafe_allow_html=True)
+                            st.markdown(render_evidence_list(pred["visual_evidence"]), unsafe_allow_html=True)
 
-                st.markdown('<p class="section-label" style="margin-top:1.1rem;">Limites</p>', unsafe_allow_html=True)
-                st.markdown(render_limitation_chips(pred["limitations"]), unsafe_allow_html=True)
+                            st.markdown('<p class="section-label" style="margin-top:1.1rem;">Justification</p>',
+                                        unsafe_allow_html=True)
+                            st.markdown(f'<div class="justification-quote">{pred["justification"]}</div>',
+                                        unsafe_allow_html=True)
 
-                st.markdown(
-                    f'<p class="meta-caption">Modèle : {pred["model_name"]} · '
-                    f'Prompt : {pred["prompt_version"]} · Latence : {pred["latency_ms"]} ms</p>',
-                    unsafe_allow_html=True,
-                )
+                            if pred.get("limitations"):
+                                st.markdown('<p class="section-label" style="margin-top:1.1rem;">Limites</p>',
+                                            unsafe_allow_html=True)
+                                st.markdown(render_limitation_chips(pred["limitations"]), unsafe_allow_html=True)
 
-                with st.expander("Détails techniques (JSON)"):
-                    st.json(pred)
+                            st.markdown(
+                                f'<p class="meta-caption">Modèle : {pred.get("model_name", "N/A")} · '
+                                f'Prompt : {pred.get("prompt_version", "N/A")} · Latence : {pred.get("latency_ms", "N/A")} ms</p>',
+                                unsafe_allow_html=True,
+                            )
+
+                            with st.expander("🔍 Détails techniques (Logs JSON)"):
+                                st.json(pred)
+
+                except Exception as e:
+                    # Gestion des erreurs propre
+                    st.error(f"Une erreur système est survenue lors de l'analyse : {str(e)}")
+
     else:
-        st.info("Déposez une image, ou utilisez les images synthétiques de `data/sample_images`.")
+        st.info(
+            "Déposez une image, ou utilisez les images synthétiques du dossier `data/sample_images` pour démarrer l'analyse.")
 
 
 # ===========================================================================
@@ -314,8 +351,8 @@ else:
     st.markdown("## 📋 Historique des prédictions")
 
     history = fetch_history()
-    counts  = count_by_class()
-    total   = sum(counts.values())
+    counts = count_by_class()
+    total = sum(counts.values())
 
     # ---- Statistiques rapides ----
     c1, c2, c3, c4 = st.columns(4)
@@ -361,13 +398,13 @@ else:
             )
             body = ""
             for r in rows:
-                cls   = r["predicted_class"]
+                cls = r["predicted_class"]
                 label = CLASS_LABELS.get(cls, cls)
-                icon  = CLASS_ICONS.get(cls, "")
-                conf  = f"{r['confidence']:.0%}"
+                icon = CLASS_ICONS.get(cls, "")
+                conf = f"{r['confidence']:.0%}"
                 fname = Path(r["image_path"]).name
-                date  = r["created_at"][:16].replace("T", " ")
-                lat   = f"{r['latency_ms']} ms"
+                date = r["created_at"][:16].replace("T", " ")
+                lat = f"{r['latency_ms']} ms"
                 body += (
                     f"<tr>"
                     f"<td style='color:var(--muted);font-size:.75rem;'>{r['id']}</td>"
@@ -386,13 +423,14 @@ else:
 
         # ---- Détail d'un run ----
         st.markdown("---")
-        st.markdown("**Inspecter un run en détail**")
+        st.markdown("*Inspecter un run en détail*")
         run_id = st.number_input("ID du run", min_value=1, step=1, value=rows[0]["id"] if rows else 1)
         if st.button("Charger le détail"):
             detail = fetch_run_detail(int(run_id))
             if detail:
                 st.markdown(render_class_badge(detail["predicted_class"]), unsafe_allow_html=True)
-                st.markdown(render_confidence_gauge(detail["confidence"], detail["predicted_class"]), unsafe_allow_html=True)
+                st.markdown(render_confidence_gauge(detail["confidence"], detail["predicted_class"]),
+                            unsafe_allow_html=True)
                 st.json(detail["prediction_json"])
             else:
                 st.warning(f"Aucun run trouvé avec l'ID {run_id}.")
