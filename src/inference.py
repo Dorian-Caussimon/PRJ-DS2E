@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
+import base64
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 from .preprocessing import basic_quality_flag
@@ -10,7 +11,7 @@ from .preprocessing import basic_quality_flag
 WARNING = "Prototype pédagogique. Non destiné au diagnostic. Validation par un professionnel qualifié requise."
 
 ALLOWED_CLASSES = {"normal", "suspected_opacity", "uncertain"}
-ALLOWED_QUALITY = {"good", "limited"}
+ALLOWED_QUALITY = {"good", "limited", "poor"}
 REQUIRED_KEYS = {
     "image_quality",
     "predicted_class",
@@ -22,95 +23,220 @@ REQUIRED_KEYS = {
 }
 
 # ---------------------------------------------------------------------------
-# Prompt amélioré (voir suggestions dans la réponse de chat)
+# MedGemma — configuration
+#
+# Modèle : google/medgemma-4b-it  (vision-language, instruction-tuned)
+# Accès  : Hugging Face Inference API (serverless ou dédié)
+# Clé    : variable d'environnement HF_TOKEN  (jamais dans le code)
+#
+# Pour utiliser ce fichier :
+#   export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxx"
+#   pip install huggingface_hub Pillow
+#
+# Accès au modèle :
+#   Le modèle MedGemma est soumis à des conditions d'usage spécifiques Google.
+#   Acceptez les conditions sur https://huggingface.co/google/medgemma-4b-it
+#   avant d'utiliser ce code, et citez la model card dans votre rapport.
 # ---------------------------------------------------------------------------
-VLM_PROMPT_TEMPLATE = """Vous êtes un assistant radiologue virtuel strictement pédagogique.
-Vous travaillez exclusivement sur des images synthétiques de validation de pipeline.
-Votre rôle est d'analyser cette radiographie thoracique frontale et de produire UNIQUEMENT
-un objet JSON valide, sans aucun texte avant ou après, et sans balises markdown (pas de ```).
-
-Schéma obligatoire (n'ajoutez aucune clé supplémentaire) :
-{
-  "image_quality": "good" ou "limited" (flou, mauvais cadrage, artefact, sur/sous-exposition => limited),
-  "predicted_class": "normal" OU "suspected_opacity" OU "uncertain" (exactement ces chaînes, aucune autre langue/casse),
-  "confidence": nombre décimal entre 0.0 et 1.0,
-  "visual_evidence": ["signes visuels observés ou absence d'anomalie, décrits factuellement"],
-  "justification": "une phrase courte reliant les signes visuels à la classe prédite",
-  "limitations": ["facteurs limitant cette analyse"],
-  "warning": "Prototype pédagogique. Non destiné au diagnostic. Validation par un professionnel qualifié requise."
-}
-
-Règles strictes :
-- Ne devinez jamais. Si l'image est de mauvaise qualité, ambiguë, ou si le signe visuel n'est pas clair, utilisez "uncertain".
-- La confiance doit rester inférieure ou égale à 0.6 si image_quality est "limited" ou si le signe est ambigu.
-- N'inventez aucun diagnostic en dehors d'une suspicion d'opacité : pas de nom de pathologie précis, pas de stade, pas de localisation anatomique fine non observable.
-- Ne proposez aucune conduite à tenir, traitement, examen complémentaire ou pronostic.
-- Si l'image ne ressemble pas à une radiographie thoracique frontale, retournez tout de même "uncertain" avec image_quality "limited" et expliquez-le dans la justification, sans analyser une autre modalité.
-
-Exemple de format de sortie attendu (cas incertain) :
-{"image_quality": "limited", "predicted_class": "uncertain", "confidence": 0.5, "visual_evidence": ["qualité d'image insuffisante pour conclure"], "justification": "L'image ne permet pas de distinguer un signe fiable.", "limitations": ["qualité d'image limitée"], "warning": "Prototype pédagogique. Non destiné au diagnostic. Validation par un professionnel qualifié requise."}
-
-Répondez maintenant UNIQUEMENT avec le JSON, rien avant, rien après.
-"""
+_HF_MODEL = "google/medgemma-4b-it"
 
 
-def toy_predict(image_path: str | Path, mode: str = "baseline") -> dict[str, Any]:
-    """Deterministic toy predictor used to validate the repo pipeline.
-    It reads synthetic labels from filenames. This is not medical inference.
+# ---------------------------------------------------------------------------
+# Chargeur de prompts : prompts/prompt_{mode}_v1.txt  (source de vérité)
+# ---------------------------------------------------------------------------
+_PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
+
+_FALLBACK_PROMPT = (
+    "You are an educational radiology assistant. Not a clinician.\n"
+    "Analyze the frontal chest X-ray. Return ONLY valid JSON, no markdown, no extra text.\n"
+    '{"image_quality":"good|limited|poor","predicted_class":"normal|suspected_opacity|uncertain",'
+    '"confidence":0.0,"visual_evidence":["observation"],"justification":"short reasoning",'
+    '"limitations":["factor"],"warning":"Educational prototype only. Not for diagnosis."}\n'
+    "Rules: no diagnosis language; if confidence<0.60 use uncertain; if quality poor use uncertain."
+)
+
+
+def _load_prompt(mode: str) -> str:
+    """Charge prompts/prompt_{mode}_v1.txt.
+    Fallback inline si le fichier est absent pour ne jamais bloquer le pipeline.
     """
-    start = time.perf_counter()
-    name = Path(image_path).name.lower()
-    quality = basic_quality_flag(image_path)
+    prompt_file = _PROMPTS_DIR / f"prompt_{mode}_v1.txt"
+    if prompt_file.exists():
+        return prompt_file.read_text(encoding="utf-8")
+    import warnings
+    warnings.warn(
+        f"[inference] Prompt file not found: {prompt_file}. Using inline fallback.",
+        stacklevel=3,
+    )
+    return _FALLBACK_PROMPT
 
-    if "suspected_opacity" in name:
-        pred = "suspected_opacity"
-        conf = 0.78 if mode == "baseline" else 0.72
-        evidence = ["synthetic opacity-like area visible in the lung field"]
-        justification = (
-            "The synthetic image contains a localized brighter region compatible with the "
-            "toy opacity class. This is a pipeline validation result, not a medical interpretation."
+
+# ---------------------------------------------------------------------------
+# Appel MedGemma via Hugging Face Inference API
+# ---------------------------------------------------------------------------
+def _encode_image_b64(image_path: Path) -> tuple[str, str]:
+    """Encode l'image en base64 et retourne (données, media_type)."""
+    suffix = image_path.suffix.lower()
+    media_type = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+    }.get(suffix, "image/jpeg")
+    data = base64.standard_b64encode(image_path.read_bytes()).decode("utf-8")
+    return data, media_type
+
+
+# Cache du pipeline MedGemma (chargé une seule fois, réutilisé ensuite)
+_medgemma_pipeline = None
+
+
+def _get_pipeline():
+    """Charge MedGemma localement via transformers (une seule fois).
+
+    Utilise le GPU si disponible, sinon CPU (lent mais fonctionnel).
+    Le modèle est mis en cache dans _medgemma_pipeline pour éviter
+    de le recharger à chaque prédiction.
+
+    Prérequis :
+        pip install transformers torch accelerate Pillow
+        huggingface-cli login   (token avec accès à google/medgemma-4b-it)
+    """
+    global _medgemma_pipeline
+    if _medgemma_pipeline is not None:
+        return _medgemma_pipeline
+
+    import sys
+    _log = lambda msg: print(f"[VLM] {msg}", file=sys.stderr, flush=True)
+
+    try:
+        import torch
+        from transformers import pipeline
+
+        device = 0 if torch.cuda.is_available() else -1
+        device_label = "GPU (cuda)" if device == 0 else "CPU (lent, ~30-60 s/image)"
+        _log(f"⏳ Chargement MedGemma sur {device_label}…")
+        _log("   (premier chargement ~1-5 min selon connexion et machine)")
+
+        _medgemma_pipeline = pipeline(
+            "image-text-to-text",
+            model=_HF_MODEL,
+            device=device,
         )
-    elif "normal" in name:
-        pred = "normal"
-        conf = 0.72 if mode == "baseline" else 0.68
-        evidence = ["no synthetic opacity marker detected"]
-        justification = (
-            "The synthetic image does not contain the opacity marker used by the toy generator. "
-            "This conclusion is limited to the synthetic validation setting."
-        )
-    else:
-        pred = "uncertain"
-        conf = 0.52
-        evidence = ["limited synthetic image quality"]
-        justification = (
-            "The image is treated as limited quality in the toy catalog. "
-            "The safe output is uncertainty rather than a forced class."
-        )
+        _log("✅ MedGemma chargé en mémoire")
+        return _medgemma_pipeline
 
-    # Improved mode is more conservative.
-    if mode == "improved" and quality != "good":
-        pred = "uncertain"
-        conf = min(conf, 0.55)
-
-    latency_ms = int((time.perf_counter() - start) * 1000)
-
-    return {
-        "image_quality": quality,
-        "predicted_class": pred,
-        "confidence": round(float(conf), 3),
-        "visual_evidence": evidence,
-        "justification": justification,
-        "limitations": ["synthetic toy image", "no clinical context", "not a validated medical model"],
-        "warning": WARNING,
-        "model_name": f"toy-rule-{mode}",
-        "prompt_version": f"{mode}_v1",
-        "latency_ms": latency_ms,
-    }
+    except ImportError as exc:
+        _log(f"❌ Dépendance manquante : {exc}")
+        _log("   Corrigez avec : pip install transformers torch accelerate")
+        return None
+    except Exception as exc:
+        _log(f"❌ Chargement MedGemma échoué : {type(exc).__name__}: {exc}")
+        return None
 
 
-def _safe_uncertain_fallback(reason: str, quality: str = "limited", model_name: str = "vlm-fallback") -> dict[str, Any]:
-    """Repli de sécurité utilisé chaque fois que le VLM échoue, renvoie un texte
-    non parsable, ou viole le schéma attendu. Toujours 'uncertain'."""
+def _call_vlm_backend(image_path: Path, prompt: str) -> str | None:
+    """Appelle MedGemma en local via transformers.
+
+    Les logs [VLM] apparaissent dans le terminal Streamlit (stderr).
+    Retourne le texte brut de la réponse, ou None en cas d'échec.
+    """
+    import sys
+    from PIL import Image as PILImage
+
+    _log = lambda msg: print(f"[VLM] {msg}", file=sys.stderr, flush=True)
+    _log(f"→ image={image_path.name}  modèle={_HF_MODEL}")
+
+    # ÉTAPE 1 : charger le pipeline (mis en cache après le 1er appel)
+    pipe = _get_pipeline()
+    if pipe is None:
+        return None
+
+    # ÉTAPE 2 : ouvrir l'image
+    try:
+        image = PILImage.open(image_path).convert("RGB")
+        _log(f"✅ image ouverte ({image.size[0]}×{image.size[1]} px)")
+    except Exception as exc:
+        _log(f"❌ ouverture image échouée : {exc}")
+        return None
+
+    # ÉTAPE 3 : inférence MedGemma
+    try:
+        _log("⏳ Inférence MedGemma en cours…")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text",  "text": prompt},
+                ],
+            }
+        ]
+        outputs = pipe(messages, max_new_tokens=1000)
+        # Le pipeline retourne une liste ; on extrait le texte généré
+        raw = outputs[0]["generated_text"][-1]["content"]
+        _log(f"✅ Réponse reçue ({len(raw)} caractères)")
+        _log(f"   Aperçu : {raw[:120].replace(chr(10), ' ')}")
+        return raw
+
+    except Exception as exc:
+        _log(f"❌ Inférence échouée : {type(exc).__name__}: {exc}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Helpers : validation et nettoyage de la réponse du modèle
+# ---------------------------------------------------------------------------
+def _extract_json_block(text: str) -> str:
+    """Retire les balises markdown et extrait le premier objet JSON du texte."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:]
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        cleaned = cleaned[start: end + 1]
+    return cleaned.strip()
+
+
+def _validate_schema(data: Any) -> bool:
+    """Vérifie strictement que la réponse respecte le schéma attendu."""
+    if not isinstance(data, dict):
+        return False
+    if not REQUIRED_KEYS.issubset(data.keys()):
+        return False
+    if data.get("image_quality") not in ALLOWED_QUALITY:
+        return False
+    if data.get("predicted_class") not in ALLOWED_CLASSES:
+        return False
+    confidence = data.get("confidence")
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+        return False
+    if not (0.0 <= float(confidence) <= 1.0):
+        return False
+    if not isinstance(data.get("visual_evidence"), list) or not all(
+        isinstance(i, str) for i in data["visual_evidence"]
+    ):
+        return False
+    if not isinstance(data.get("justification"), str):
+        return False
+    if not isinstance(data.get("limitations"), list) or not all(
+        isinstance(i, str) for i in data["limitations"]
+    ):
+        return False
+    if not isinstance(data.get("warning"), str):
+        return False
+    return True
+
+
+def _safe_uncertain_fallback(
+    reason: str,
+    quality: str = "limited",
+    model_name: str = "vlm-fallback",
+    prompt_version: str = "unknown",
+) -> dict[str, Any]:
+    """Retourne toujours 'uncertain' quand MedGemma échoue ou renvoie un schéma invalide."""
     return {
         "image_quality": quality if quality in ALLOWED_QUALITY else "limited",
         "predicted_class": "uncertain",
@@ -123,118 +249,91 @@ def _safe_uncertain_fallback(reason: str, quality: str = "limited", model_name: 
         ],
         "warning": WARNING,
         "model_name": model_name,
-        "prompt_version": "vlm_v1",
+        "prompt_version": prompt_version,
         "latency_ms": 0,
     }
 
 
-def _validate_schema(data: Any) -> bool:
-    """Vérifie strictement que la réponse du modèle respecte le schéma attendu."""
-    if not isinstance(data, dict):
-        return False
-    if not REQUIRED_KEYS.issubset(data.keys()):
-        return False
-    if data.get("image_quality") not in ALLOWED_QUALITY:
-        return False
-    if data.get("predicted_class") not in ALLOWED_CLASSES:
-        return False
+# ---------------------------------------------------------------------------
+# Fonction publique principale
+# ---------------------------------------------------------------------------
+def vlm_predict(
+    image_path: str | Path,
+    mode: str = "baseline",
+    prompt: str | None = None,
+) -> dict[str, Any]:
+    """Analyse une radiographie via MedGemma avec le prompt du mode choisi.
 
-    confidence = data.get("confidence")
-    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
-        return False
-    if not (0.0 <= float(confidence) <= 1.0):
-        return False
+    Flux :
+      1. Charge prompts/prompt_{mode}_v1.txt  (baseline ou improved)
+      2. Encode l'image en base64 et l'envoie avec le prompt à MedGemma
+      3. Parse et valide le JSON retourné par le modèle
+      4. En cas d'échec à n'importe quelle étape → retombe sur uncertain
 
-    if not isinstance(data.get("visual_evidence"), list) or not all(
-        isinstance(item, str) for item in data["visual_evidence"]
-    ):
-        return False
-    if not isinstance(data.get("justification"), str):
-        return False
-    if not isinstance(data.get("limitations"), list) or not all(
-        isinstance(item, str) for item in data["limitations"]
-    ):
-        return False
-    if not isinstance(data.get("warning"), str):
-        return False
+    Variables d'environnement requises :
+      HF_TOKEN  — token Hugging Face avec accès à google/medgemma-4b-it
 
-    return True
-
-
-def _extract_json_block(text: str) -> str:
-    """Nettoie une réponse de VLM qui pourrait contenir des balises markdown
-    ou du texte autour du JSON, avant de tenter le parsing."""
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.lower().startswith("json"):
-            cleaned = cleaned[4:]
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        cleaned = cleaned[start : end + 1]
-    return cleaned.strip()
-
-
-def _call_vlm_backend(image_path: Path, prompt: str) -> str | None:
-    """Point d'extension pour un vrai appel au VLM (MedGemma / Gemma multimodal
-    via l'API d'inférence Hugging Face, ou un pipeline transformers local).
-
-    Dans cet environnement pédagogique, aucun backend n'est câblé par défaut :
-    la fonction renvoie None, ce qui fait retomber `vlm_predict` sur le
-    prédicteur déterministe `toy_predict`, afin de garder le pipeline testable
-    sans dépendre d'un modèle ni d'une clé d'API.
-
-    Pour les étudiants : remplacez le corps de cette fonction par un vrai appel,
-    par exemple via `huggingface_hub.InferenceClient.chat_completion(...)` ou
-    `transformers.pipeline("image-text-to-text", model="google/medgemma-4b-it")`,
-    en passant `image_path` et `prompt`, et en renvoyant le texte brut de la
-    réponse du modèle (à parser ensuite en JSON par `vlm_predict`).
-    """
-    return None
-
-
-def vlm_predict(image_path: str | Path, mode: str = "baseline", prompt: str | None = None) -> dict[str, Any]:
-    """Prédiction via un VLM (MedGemma / Gemma), avec repli de sécurité strict.
-
-    Garanties :
-    - Le schéma de sortie reste identique à `toy_predict`.
-    - En l'absence de backend configuré, ou en cas de réponse non parsable /
-      hors schéma, le résultat retombe sur `uncertain` plutôt que d'inventer
-      une classe.
-    - Le champ `warning` n'est jamais celui renvoyé par le modèle : il est
-      toujours réécrit par le code, pour ne jamais dépendre du LLM sur ce point.
+    Le champ 'warning' est toujours réécrit par le code,
+    jamais laissé tel que renvoyé par le modèle.
     """
     start = time.perf_counter()
     image_path = Path(image_path)
     quality = basic_quality_flag(image_path)
-    used_prompt = prompt or VLM_PROMPT_TEMPLATE
+    prompt_version = f"{mode}_v1"
+    used_prompt = prompt if prompt is not None else _load_prompt(mode)
 
+    # --- Appel MedGemma ---
     try:
         raw_output = _call_vlm_backend(image_path, used_prompt)
     except Exception:
         raw_output = None
 
     if raw_output is None:
-        # Aucun backend VLM configuré : on garde un comportement déterministe
-        # et testable en repassant par le prédicteur toy.
-        result = toy_predict(image_path, mode=mode)
-        result["model_name"] = f"vlm-toy-fallback-{mode}"
-        result["prompt_version"] = "vlm_v1"
-        return result
+        return _safe_uncertain_fallback(
+            reason="appel MedGemma échoué (token absent, modèle inaccessible ou timeout)",
+            quality=quality,
+            model_name=f"medgemma-{mode}",
+            prompt_version=prompt_version,
+        )
 
+    # --- Parsing JSON ---
     try:
         cleaned = _extract_json_block(raw_output)
         data = json.loads(cleaned)
     except (json.JSONDecodeError, TypeError):
-        return _safe_uncertain_fallback("réponse du modèle non parsable en JSON", quality)
+        return _safe_uncertain_fallback(
+            reason="réponse MedGemma non parsable en JSON",
+            quality=quality,
+            model_name=f"medgemma-{mode}",
+            prompt_version=prompt_version,
+        )
 
+    # --- Validation schéma ---
     if not _validate_schema(data):
-        return _safe_uncertain_fallback("schéma JSON invalide ou champ hors valeurs autorisées", quality)
+        return _safe_uncertain_fallback(
+            reason="schéma JSON invalide ou valeur hors liste autorisée",
+            quality=quality,
+            model_name=f"medgemma-{mode}",
+            prompt_version=prompt_version,
+        )
 
+    # --- Post-traitement ---
     data["confidence"] = round(float(data["confidence"]), 3)
-    data["warning"] = WARNING  # ne jamais faire confiance au modèle sur ce champ
-    data.setdefault("model_name", f"vlm-{mode}")
-    data.setdefault("prompt_version", "vlm_v1")
+    data["warning"] = WARNING                            # toujours réécrit par le code
+    data["model_name"] = f"medgemma-4b-it-{mode}"       # traçable dans la DB
+    data["prompt_version"] = prompt_version              # baseline_v1 ou improved_v1
     data["latency_ms"] = int((time.perf_counter() - start) * 1000)
     return data
+
+
+# ---------------------------------------------------------------------------
+# Rétrocompatibilité
+# ---------------------------------------------------------------------------
+def toy_predict(image_path: str | Path, mode: str = "baseline") -> dict[str, Any]:
+    """Conservé pour les smoke tests existants. Délègue à vlm_predict."""
+    return vlm_predict(image_path, mode=mode)
+
+
+def vlm_predict_placeholder(image_path: str | Path, prompt: str) -> dict[str, Any]:
+    """Conservé pour compatibilité ascendante."""
+    return vlm_predict(image_path, mode="baseline", prompt=prompt)
