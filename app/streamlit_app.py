@@ -31,19 +31,19 @@ CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Spectral:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
 
 :root{
-  --bg:#F6F7F4;
-  --card-bg:#FFFFFF;
-  --ink:#1F2A2E;
-  --muted:#5B6B6F;
-  --border:#E4E7E5;
-  --accent:#0E7C86;
-  --accent-soft:#E3F2F1;
-  --normal:#2F7D5B;
-  --normal-soft:#E6F4EC;
-  --opacity:#C2660B;
-  --opacity-soft:#FBEBD9;
-  --uncertain:#5B6472;
-  --uncertain-soft:#ECEEF0;
+  --bg:#14181A;
+  --card-bg:#1D2224;
+  --ink:#E7EBEA;
+  --muted:#9AA6A8;
+  --border:#333B3D;
+  --accent:#2FB4A8;
+  --accent-soft:#1E3937;
+  --normal:#4FBF8B;
+  --normal-soft:#1E3A2C;
+  --opacity:#E29A4D;
+  --opacity-soft:#3D2E1A;
+  --uncertain:#A8B0B4;
+  --uncertain-soft:#2A2F31;
 }
 
 .stApp{ background:var(--bg); }
@@ -109,7 +109,7 @@ html, body, [class*="css"]{ font-family:'Inter', sans-serif; color:var(--ink); }
 .hist-table{ width:100%; border-collapse:collapse; font-size:.88rem; }
 .hist-table th{ background:var(--accent-soft); color:var(--accent); font-weight:600; text-align:left; padding:.55rem .75rem; border-bottom:2px solid var(--accent); font-size:.75rem; text-transform:uppercase; letter-spacing:.08em; }
 .hist-table td{ padding:.55rem .75rem; border-bottom:1px solid var(--border); vertical-align:middle; }
-.hist-table tr:hover td{ background:#F0FAF9; }
+.hist-table tr:hover td{ background:var(--accent-soft); }
 .hist-count{ font-family:'Spectral', serif; font-size:2.2rem; font-weight:600; color:var(--accent); line-height:1; }
 .hist-sub{ color:var(--muted); font-size:.8rem; margin:.15rem 0 0 0; }
 .stat-card{ background:var(--card-bg); border:1px solid var(--border); border-radius:12px; padding:1rem 1.2rem; text-align:center; }
@@ -197,9 +197,9 @@ def count_by_class() -> dict[str, int]:
 # ---------------------------------------------------------------------------
 HEADER_MARK = (
     '<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">'
-    '<circle cx="18" cy="18" r="15.5" stroke="#0E7C86" stroke-width="2" stroke-dasharray="68 28" '
+    '<circle cx="18" cy="18" r="15.5" stroke="#2FB4A8" stroke-width="2" stroke-dasharray="68 28" '
     'stroke-linecap="round" transform="rotate(-90 18 18)"/>'
-    '<circle cx="18" cy="18" r="4" fill="#0E7C86"/>'
+    '<circle cx="18" cy="18" r="4" fill="#2FB4A8"/>'
     "</svg>"
 )
 
@@ -266,7 +266,8 @@ if page == "🩻 Analyse":
         # Toujours via VLM — le mode détermine quel prompt est utilisé
         # baseline → prompts/prompt_baseline_v1.txt
         # improved → prompts/prompt_improved_v1.txt
-        pred = apply_safety_guardrails(vlm_predict(tmp_path, mode=mode))
+        with st.spinner("Analyse MedGemma en cours… (premier chargement du modèle : 1 à 5 min)"):
+            pred = apply_safety_guardrails(vlm_predict(tmp_path, mode=mode))
 
         # Persistance en base
         case_id = uuid.uuid4().hex[:8]
@@ -280,7 +281,7 @@ if page == "🩻 Analyse":
         with col1:
             with st.container(border=True):
                 st.markdown('<p class="section-label">Image source</p>', unsafe_allow_html=True)
-                st.image(Image.open(tmp_path), use_container_width=True)
+                st.image(Image.open(tmp_path), width="stretch")
                 st.markdown(render_quality_tag(pred["image_quality"]), unsafe_allow_html=True)
                 st.caption(f"{uploaded.name} · ID run : {case_id}")
 

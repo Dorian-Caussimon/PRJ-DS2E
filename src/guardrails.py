@@ -37,6 +37,9 @@ def apply_safety_guardrails(pred: dict[str, Any]) -> dict[str, Any]:
         pred["limitations"].append(NON_CLINICAL_LIMITATION)
     if pred.get("image_quality") in {"limited", "poor"} and float(pred.get("confidence", 0)) < 0.6:
         pred["predicted_class"] = "uncertain"
+    if any("not recognized as a chest x-ray" in str(item).lower() for item in pred["limitations"]):
+        pred["predicted_class"] = "uncertain"
+        pred["confidence"] = min(float(pred.get("confidence", 0.0) or 0.0), 0.0)
     pred["warning"] = WARNING_TEXT
     pred["guardrail_errors"] = errors
     return pred

@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .preprocessing import basic_quality_flag
+from .preprocessing import basic_quality_flag, looks_like_xray
 
 WARNING = "Prototype pédagogique. Non destiné au diagnostic. Validation par un professionnel qualifié requise."
 
@@ -92,15 +92,27 @@ def _encode_image_b64(image_path: Path) -> tuple[str, str]:
 
 
 # Cache du pipeline MedGemma (chargé une seule fois, réutilisé ensuite)
+# @st.cache_resource si Streamlit est disponible : garantit la persistance
+# du modèle en mémoire entre les reruns du script (chaque interaction UI
+# relance streamlit_app.py, sans ce cache le modèle serait rechargé à
+# chaque upload d'image).
+try:
+    import streamlit as _st
+    _cache_resource = _st.cache_resource
+except ImportError:
+    def _cache_resource(func):
+        return func
+
 _medgemma_pipeline = None
 
 
+@_cache_resource
 def _get_pipeline():
     """Charge MedGemma localement via transformers (une seule fois).
 
     Utilise le GPU si disponible, sinon CPU (lent mais fonctionnel).
-    Le modèle est mis en cache dans _medgemma_pipeline pour éviter
-    de le recharger à chaque prédiction.
+    Mis en cache via st.cache_resource (ou une variable globale en
+    dehors de Streamlit) pour éviter de le recharger à chaque prédiction.
 
     Prérequis :
         pip install transformers torch accelerate Pillow
@@ -167,6 +179,13 @@ def _call_vlm_backend(image_path: Path, prompt: str) -> str | None:
     try:
         image = PILImage.open(image_path).convert("RGB")
         _log(f"✅ image ouverte ({image.size[0]}×{image.size[1]} px)")
+        # Borne la résolution pour éviter une explosion du nombre de tokens
+        # visuels (et des temps d'inférence de plusieurs minutes) sur des
+        # images bien plus grandes que ce que le modèle attend.
+        max_side = 896
+        if max(image.size) > max_side:
+            image.thumbnail((max_side, max_side), PILImage.LANCZOS)
+            _log(f"↘️ image redimensionnée ({image.size[0]}×{image.size[1]} px)")
     except Exception as exc:
         _log(f"❌ ouverture image échouée : {exc}")
         return None
@@ -293,6 +312,24 @@ def vlm_predict(
     quality = basic_quality_flag(image_path)
     prompt_version = f"{mode}_v1"
     used_prompt = prompt if prompt is not None else _load_prompt(mode)
+
+    # --- Garde-fou technique (non-IA) : rejette les images qui ne
+    # ressemblent pas à une radiographie avant même d'appeler MedGemma,
+    # car le modèle peut halluciner un résultat plausible sur n'importe
+    # quelle image plutôt que de refuser de répondre. ---
+    try:
+        from PIL import Image as _PILImage
+        with _PILImage.open(image_path) as _img:
+            is_xray = looks_like_xray(_img.convert("RGB"))
+    except Exception:
+        is_xray = True  # ne bloque pas sur une erreur de lecture ; MedGemma gérera l'échec
+    if not is_xray:
+        return _safe_uncertain_fallback(
+            reason="image non reconnue comme une radiographie thoracique (contrôle technique pré-modèle)",
+            quality=quality,
+            model_name=f"medgemma-{mode}",
+            prompt_version=prompt_version,
+        )
 
     # --- Appel MedGemma ---
     try:
